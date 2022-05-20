@@ -3,12 +3,17 @@ package osquery
 import (
 	"fmt"
 	"github.com/osquery/osquery-go"
+	audit "github.com/vela-security/vela-audit"
+	"github.com/vela-security/vela-public/auxlib"
+	"github.com/vela-security/vela-public/grep"
 	"github.com/vela-security/vela-public/lua"
 	"gopkg.in/tomb.v2"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -53,7 +58,62 @@ func (o *osq) Start() error {
 	return nil
 }
 
+func (o *osq) deletePidFile() {
+	file := filepath.Join(o.cfg.prefix, "osquery.pid")
+	if e := os.Remove(file); e != nil {
+		xEnv.Errorf("delete %s error %v", file, e)
+	} else {
+		xEnv.Errorf("delete %s succeed", file)
+	}
+}
+
+func (o *osq) deleteLogFile() {
+	d, err := os.ReadDir(o.cfg.prefix)
+	if err != nil {
+		xEnv.Errorf("find %s  prefix dir fail", o.cfg.prefix)
+		return
+	}
+
+	filter := grep.New("*.log")
+	for _, item := range d {
+		if item.IsDir() {
+			continue
+		}
+
+		if !filter(item.Name()) {
+			continue
+		}
+
+		file := filepath.Join(o.cfg.prefix, item.Name())
+		if er := os.Remove(file); er != nil {
+			xEnv.Errorf("delete %s error %v", file, er)
+		} else {
+			xEnv.Errorf("delete %s succeed", file)
+		}
+	}
+}
+
+func (o *osq) deleteLockFile() {
+	lock := filepath.Join(o.cfg.prefix, "osquery.db", "LOCK")
+	os.Remove(lock)
+
+	current := filepath.Join(o.cfg.prefix, "osquery.db", "CURRENT")
+	os.Remove(current)
+}
+
+func (o *osq) clean() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	o.deleteLockFile()
+	o.deletePidFile()
+	o.deleteLogFile()
+}
+
 func (o *osq) Close() error {
+	defer o.clean()
+
 	if o.cmd != nil && o.cmd.Process != nil {
 		o.cmd.Process.Kill()
 	}
@@ -68,26 +128,70 @@ func (o *osq) Close() error {
 
 	o.tom.Kill(fmt.Errorf("osquery kill"))
 	o.V(lua.PTClose, time.Now())
+
 	return nil
+}
+
+func (o *osq) wait() {
+	if er := o.cmd.Wait(); er != nil {
+		audit.Errorf("osquery client start fail %v", er).From(o.Code()).Log().Put()
+	} else {
+		audit.Debug("osquery client start succeed").From(o.Code()).Log().Put()
+	}
+}
+
+func (o *osq) Verbose(r io.Reader) {
+	buf := make([]byte, 4096)
+
+	for {
+		select {
+		case <-o.tom.Dying():
+			audit.Debug("osquery debug verbose over.")
+
+		default:
+			n, err := r.Read(buf)
+			switch err {
+			case nil:
+				if n == 0 {
+					time.After(5 * time.Second)
+					continue
+				}
+				audit.Debug("osquery verbose %s", auxlib.B2S(buf[:n]))
+
+			case io.EOF:
+				time.After(60 * time.Second)
+
+			default:
+				audit.Errorf("osquery verbose scanner fail %v", err).Log().From(o.CodeVM()).Put()
+				return
+			}
+		}
+	}
+
 }
 
 func (o *osq) forkExec() error {
 	o.mux.Lock()
 	defer o.mux.Unlock()
-	path := filepath.Join("./", o.cfg.path)
 
+	path := filepath.Join("./", o.cfg.path)
 	cmd := exec.Command(path, o.cfg.Args()...)
 	cmd.SysProcAttr = newSysProcAttr()
+
+	out, err := cmd.StderrPipe()
+	if err != nil {
+		audit.Errorf("osquery client stdout pipe got fail %v", err).Log().From(o.CodeVM()).Put()
+		return err
+	}
 
 	if e := cmd.Start(); e != nil {
 		return e
 	}
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
 	o.cmd = cmd
-	o.tom.Go(cmd.Wait)
+	go o.Verbose(out)
+	go o.wait()
+
 	return nil
 }
 
@@ -140,7 +244,7 @@ query:
 }
 
 func (o *osq) connect() error {
-	if !o.detect(0) {
+	if !o.detect(1) {
 		return fmt.Errorf("%s not found %s", o.Name(), o.cfg.sock)
 	}
 

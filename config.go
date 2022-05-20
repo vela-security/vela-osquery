@@ -6,14 +6,15 @@ import (
 	"github.com/vela-security/vela-public/lua"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 type config struct {
-	name    string
-	path    string
-	hash    string
-	sock    string
+	name   string
+	path   string
+	hash   string
+	sock   string
+	prefix string
+
 	flags   []string
 	timeout int
 	co      *lua.LState
@@ -43,24 +44,30 @@ func newConfig(L *lua.LState) *config {
 
 }
 
-func (cfg *config) Args() []string {
+func (cfg *config) Flags() []string {
 	var flags []string
+	if runtime.GOOS == "windows" {
+		flags = append(flags, "--extensions_socket=\""+cfg.sock+"\"")
+	} else {
+		flags = append(flags, "--extensions_socket="+cfg.sock)
+	}
 
-	shell := false
+	flags = append(flags, fmt.Sprintf("--config_path=%s\\osquery.config", cfg.prefix))
+	flags = append(flags, fmt.Sprintf("--database_path=%s\\osquery.db", cfg.prefix))
+	flags = append(flags, fmt.Sprintf("--logger_path=%s", cfg.prefix))
+	flags = append(flags, fmt.Sprintf("--pidfile=%s\\osquery.pid", cfg.prefix))
+	flags = append(flags, fmt.Sprintf("--disable_extensions=false"))
+
+	return flags
+}
+
+func (cfg *config) Args() []string {
+	flags := cfg.Flags()
+
 	for _, item := range cfg.flags {
-		if strings.HasPrefix(item, "extensions_socket=") {
-			shell = true
-		}
 		flags = append(flags, "--"+item)
 	}
 
-	if !shell {
-		if runtime.GOOS == "windows" {
-			flags = append(flags, "--extensions_socket=\""+cfg.sock+"\"")
-		} else {
-			flags = append(flags, "--extensions_socket="+cfg.sock)
-		}
-	}
 	return flags
 }
 
@@ -77,6 +84,9 @@ func (cfg *config) NewIndex(L *lua.LState, key string, val lua.LValue) bool {
 
 	case "hash":
 		cfg.hash = val.String()
+
+	case "prefix":
+		cfg.prefix = val.String()
 
 	case "timeout":
 		n := lua.IsInt(val)
