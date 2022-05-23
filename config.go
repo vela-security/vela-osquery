@@ -24,7 +24,7 @@ func newConfig(L *lua.LState) *config {
 	cfg := &config{name: "osquery", timeout: 5}
 
 	if L.CodeVM() != "vela-osquery" {
-		L.RaiseError("not allow %v create osquery client", L.CodeVM())
+		L.RaiseError("not allow %v create osquery osq", L.CodeVM())
 		return cfg
 	}
 

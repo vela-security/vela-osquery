@@ -18,11 +18,11 @@ import (
 	"time"
 )
 
-var typeof = reflect.TypeOf((*osq)(nil)).String()
+var typeof = reflect.TypeOf((*osqueryEx)(nil)).String()
 
-var client *osq
+var osq *osqueryEx
 
-type osq struct {
+type osqueryEx struct {
 	lua.ProcEx
 	cfg *config
 	tom *tomb.Tomb
@@ -31,25 +31,25 @@ type osq struct {
 	cli *osquery.ExtensionManagerClient
 }
 
-func newOsq(cfg *config) *osq {
-	o := &osq{cfg: cfg}
+func newOsq(cfg *config) *osqueryEx {
+	o := &osqueryEx{cfg: cfg}
 	o.V(lua.PTInit, typeof)
 	return o
 }
 
-func (o *osq) Name() string {
+func (o *osqueryEx) Name() string {
 	return o.cfg.name
 }
 
-func (o *osq) Type() string {
+func (o *osqueryEx) Type() string {
 	return typeof
 }
 
-func (o *osq) Code() string {
+func (o *osqueryEx) Code() string {
 	return o.cfg.co.CodeVM()
 }
 
-func (o *osq) Start() error {
+func (o *osqueryEx) Start() error {
 	o.tom = new(tomb.Tomb)
 
 	if e := o.forkExec(); e != nil {
@@ -58,7 +58,7 @@ func (o *osq) Start() error {
 	return nil
 }
 
-func (o *osq) deletePidFile() {
+func (o *osqueryEx) deletePidFile() {
 	file := filepath.Join(o.cfg.prefix, "osquery.pid")
 	if e := os.Remove(file); e != nil {
 		xEnv.Errorf("delete %s error %v", file, e)
@@ -67,7 +67,7 @@ func (o *osq) deletePidFile() {
 	}
 }
 
-func (o *osq) deleteLogFile() {
+func (o *osqueryEx) deleteLogFile() {
 	d, err := os.ReadDir(o.cfg.prefix)
 	if err != nil {
 		xEnv.Errorf("find %s  prefix dir fail", o.cfg.prefix)
@@ -93,7 +93,7 @@ func (o *osq) deleteLogFile() {
 	}
 }
 
-func (o *osq) deleteLockFile() {
+func (o *osqueryEx) deleteLockFile() {
 	lock := filepath.Join(o.cfg.prefix, "osquery.db", "LOCK")
 	os.Remove(lock)
 
@@ -101,7 +101,7 @@ func (o *osq) deleteLockFile() {
 	os.Remove(current)
 }
 
-func (o *osq) clean() {
+func (o *osqueryEx) clean() {
 	if runtime.GOOS != "windows" {
 		return
 	}
@@ -111,15 +111,15 @@ func (o *osq) clean() {
 	o.deleteLogFile()
 }
 
-func (o *osq) Close() error {
+func (o *osqueryEx) Close() error {
 	defer o.clean()
 
 	if o.cmd != nil && o.cmd.Process != nil {
 		o.cmd.Process.Kill()
 	}
 
-	if client != nil {
-		client = nil
+	if osq != nil {
+		osq = nil
 	}
 
 	if o.cli != nil {
@@ -132,15 +132,15 @@ func (o *osq) Close() error {
 	return nil
 }
 
-func (o *osq) wait() {
+func (o *osqueryEx) wait() {
 	if er := o.cmd.Wait(); er != nil {
-		audit.Errorf("osquery client start fail %v", er).From(o.Code()).Log().Put()
+		audit.Errorf("osquery osq start fail %v", er).From(o.Code()).Log().Put()
 	} else {
-		audit.Debug("osquery client start succeed").From(o.Code()).Log().Put()
+		audit.Debug("osquery osq start succeed").From(o.Code()).Log().Put()
 	}
 }
 
-func (o *osq) Verbose(r io.Reader) {
+func (o *osqueryEx) Verbose(r io.Reader) {
 	buf := make([]byte, 4096)
 
 	for {
@@ -170,7 +170,7 @@ func (o *osq) Verbose(r io.Reader) {
 
 }
 
-func (o *osq) forkExec() error {
+func (o *osqueryEx) forkExec() error {
 	o.mux.Lock()
 	defer o.mux.Unlock()
 
@@ -180,7 +180,7 @@ func (o *osq) forkExec() error {
 
 	out, err := cmd.StderrPipe()
 	if err != nil {
-		audit.Errorf("osquery client stdout pipe got fail %v", err).Log().From(o.CodeVM()).Put()
+		audit.Errorf("osquery osq stdout pipe got fail %v", err).Log().From(o.CodeVM()).Put()
 		return err
 	}
 
@@ -195,41 +195,11 @@ func (o *osq) forkExec() error {
 	return nil
 }
 
-func (o *osq) detect(poll int) bool {
-	if _, err := os.Stat(o.cfg.sock); err == nil {
-		return true
-	}
-
-	if poll == 0 {
-		return false
-	}
-
-	tk := time.NewTicker(time.Second)
-	defer tk.Stop()
-
-	i := 0
-	for {
-		select {
-		case <-tk.C:
-			i++
-			if _, err := os.Stat(o.cfg.sock); err == nil {
-				return true
-			}
-
-			if i >= poll {
-				return false
-			}
-
-		case <-o.tom.Dying():
-			return false
-
-		}
-	}
-
-	return false
+func (o *osqueryEx) detect(poll int) bool {
+	return detect(o.cfg.sock, poll)
 }
 
-func (o *osq) query(sql string) reply {
+func (o *osqueryEx) query(sql string) reply {
 	if o.cli != nil {
 		goto query
 	}
@@ -243,7 +213,7 @@ query:
 	return newReply(v, e)
 }
 
-func (o *osq) connect() error {
+func (o *osqueryEx) connect() error {
 	if !o.detect(1) {
 		return fmt.Errorf("%s not found %s", o.Name(), o.cfg.sock)
 	}
